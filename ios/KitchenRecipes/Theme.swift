@@ -13,11 +13,18 @@ enum Palette {
     static let leaf = Color(red: 0.36, green: 0.55, blue: 0.31)
     static let sea = Color(red: 0.23, green: 0.45, blue: 0.62)
 
-    /// Chart series — colorblind-safe ordering (blue/orange/green/purple).
+    /// Chart series — CVD-validated order (green, blue, orange, purple, red).
+    /// Green never sits beside orange or red, so the classic red-green
+    /// confusion pairs are never adjacent. Orange steps darker in dark mode
+    /// to stay inside the lightness band on dark surfaces.
     static let chart: [Color] = [
-        Color(red: 0.27, green: 0.47, blue: 0.72),
-        Color(red: 0.88, green: 0.53, blue: 0.20),
         Color(red: 0.36, green: 0.62, blue: 0.35),
+        Color(red: 0.27, green: 0.47, blue: 0.72),
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.85, green: 0.47, blue: 0.16, alpha: 1)
+                : UIColor(red: 0.88, green: 0.53, blue: 0.20, alpha: 1)
+        }),
         Color(red: 0.55, green: 0.42, blue: 0.67),
         Color(red: 0.75, green: 0.31, blue: 0.30),
     ]
