@@ -1,12 +1,8 @@
-name: Publish to GitHub Pages
+name: Deploy to GitHub Pages
 
-# The site is served from the gh-pages branch (Pages was auto-enabled when
-# that branch was created). This workflow keeps gh-pages an exact mirror of
-# main. Keep the Pages source setting on "Deploy from a branch: gh-pages".
-#
-# The explicit build request matters: branch pushes made with GITHUB_TOKEN
-# do not trigger the automatic "pages build and deployment" run, so without
-# it the site would silently stay on the old version.
+# Artifact-based Pages deployment (source: GitHub Actions). This avoids the
+# gh-pages-branch pitfall where pushes made with GITHUB_TOKEN don't trigger
+# the automatic pages build, silently serving stale content.
 
 on:
   push:
@@ -14,23 +10,30 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
+  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  publish:
+  deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - name: Mirror main to gh-pages
-        run: git push --force origin HEAD:gh-pages
-      - name: Request Pages build
-        run: |
-          curl -sf -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${{ github.repository }}/pages/builds
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
