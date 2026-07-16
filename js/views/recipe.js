@@ -1,6 +1,7 @@
 // Recipe detail: Danish-unit ingredient list, step-by-step instructions,
-// favorite + 5-star rating, "cooking mode" (screen stays awake, huge text,
-// swipe navigation), and one-tap logging into the nutrition graph.
+// favorite + 5-star rating, "cooking mode" (screen stays awake, auto-sized
+// step text, step timers, swipe navigation), and one-tap logging into the
+// nutrition graph.
 
 import { el, clear, icon, toast, starsEditor, fmt } from "../ui.js";
 import * as mealdb from "../mealdb.js";
@@ -56,7 +57,7 @@ export async function render(container, id) {
   clear(container);
 
   const favBtn = el("button", {
-    class: `icon-btn${isFav ? "" : ""}`,
+    class: "icon-btn",
     "aria-label": isFav ? "Remove from favorites" : "Add to favorites",
     "aria-pressed": String(isFav),
     style: isFav ? "color: var(--heart)" : "",
@@ -69,7 +70,7 @@ export async function render(container, id) {
   }, icon("heart"));
   if (isFav) favBtn.querySelector("svg").style.fill = "currentColor";
 
-  const ingList = el("ul", { class: "ingredients-list" }, ingredients.map((ing) => {
+  const ingList = el("ul", { class: "ingredients-list grid-cols" }, ingredients.map((ing) => {
     const check = el("input", { type: "checkbox", "aria-label": `Got ${ing.name}` });
     const li = el("li", {}, check,
       el("span", { class: "qty" }, toDanishMeasure(ing.measure, ing.name) || "–"),
@@ -121,10 +122,61 @@ export async function render(container, id) {
 
 // ---------- cooking mode ----------
 
+/** Find timeable durations in a step ("bake 35 minutes", "10-15 min"). */
+function parseDurations(text) {
+  const out = [];
+  const seen = new Set();
+  const re = /(\d+(?:\.\d+)?)\s*(?:(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*)?(hours?|hrs?\.?|minutes?|mins?\.?|seconds?|secs?\.?)\b/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    const a = parseFloat(m[1]);
+    const b = m[2] ? parseFloat(m[2]) : null;
+    const unit = m[3].toLowerCase();
+    const mult = unit.startsWith("h") ? 3600 : unit.startsWith("m") ? 60 : 1;
+    const value = Math.round((b ?? a) * mult); // for ranges, take the upper bound
+    if (value < 15 || value > 6 * 3600 || seen.has(value)) continue;
+    seen.add(value);
+    const label = mult === 3600 ? `${b ?? a} h` : mult === 60 ? `${b ?? a} min` : `${b ?? a} s`;
+    out.push({ seconds: value, label });
+  }
+  return out.slice(0, 3);
+}
+
+function formatCountdown(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+let audioCtx = null;
+function ringAlarm() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const now = audioCtx.currentTime;
+    for (let i = 0; i < 4; i++) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.frequency.value = i % 2 ? 660 : 880;
+      const t = now + i * 0.45;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.35, t + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.38);
+      osc.start(t);
+      osc.stop(t + 0.42);
+    }
+  } catch { /* no audio available */ }
+  navigator.vibrate?.([300, 140, 300, 140, 300]);
+}
+
 function startCookingMode(meal, ingredients, steps) {
   let stepIndex = 0;
   let wakeLock = null;
   let showIngredients = false;
+  const durations = steps.map(parseDurations);
 
   const lockBadge = el("span", { class: "cook-lock" }, "screen: –");
 
@@ -151,16 +203,62 @@ function startCookingMode(meal, ingredients, steps) {
     if (document.visibilityState === "visible" && overlay.isConnected) acquireWakeLock();
   };
 
+  // ----- timers (survive step navigation; shown under the progress bar) -----
+  const activeTimers = [];
+  const timersBar = el("div", { class: "cook-timers", style: "display:none" });
+  let tick = null;
+
+  function ensureTick() {
+    if (tick) return;
+    tick = setInterval(() => {
+      let anyRunning = false;
+      for (const timer of activeTimers) {
+        if (timer.done) continue;
+        const left = Math.max(0, Math.round((timer.endsAt - Date.now()) / 1000));
+        if (left <= 0) {
+          timer.done = true;
+          timer.chip.classList.remove("running");
+          timer.chip.classList.add("done");
+          timer.chip.replaceChildren(icon("bell"), `Step ${timer.step + 1} — time's up! ✕`);
+          ringAlarm();
+        } else {
+          anyRunning = true;
+          timer.chip.replaceChildren(icon("clock"), `Step ${timer.step + 1} · ${formatCountdown(left)}`);
+        }
+      }
+      if (!anyRunning) { clearInterval(tick); tick = null; }
+    }, 1000);
+  }
+
+  function addTimer(seconds) {
+    const chip = el("button", { class: "timer-chip running", "aria-label": "Cancel timer" },
+      icon("clock"), `Step ${stepIndex + 1} · ${formatCountdown(seconds)}`);
+    const timer = { endsAt: Date.now() + seconds * 1000, step: stepIndex, chip, done: false };
+    chip.onclick = () => {
+      activeTimers.splice(activeTimers.indexOf(timer), 1);
+      chip.remove();
+      if (activeTimers.length === 0) timersBar.style.display = "none";
+    };
+    activeTimers.push(timer);
+    timersBar.append(chip);
+    timersBar.style.display = "flex";
+    ensureTick();
+  }
+
+  // ----- step UI -----
   const progress = el("div", { class: "cook-progress", "aria-hidden": "true" },
     steps.map(() => el("span")));
   const stepNum = el("div", { class: "cook-step-num" });
   const stepText = el("div", { class: "cook-step-text" });
+  const stepTimers = el("div", { class: "step-timers" });
   const ingPanel = el("div", { class: "cook-ingredients", style: "display:none" },
-    el("ul", { class: "ingredients-list" }, ingredients.map((ing) =>
+    el("ul", {}, ingredients.map((ing) =>
       el("li", {}, el("span", { class: "qty" }, toDanishMeasure(ing.measure, ing.name) || "–"), el("span", {}, ing.name)))));
 
   const prevBtn = el("button", { onclick: () => go(-1) }, icon("chevron-left"), "Previous");
-  const nextBtn = el("button", { class: "primary", onclick: () => go(1) }, "Next", icon("chevron-right"));
+  // No handler here — paint() owns nextBtn.onclick (Next vs Done/exit) so a
+  // single click never fires two handlers.
+  const nextBtn = el("button", { class: "primary" }, "Next", icon("chevron-right"));
 
   function go(delta) {
     const next = Math.min(Math.max(stepIndex + delta, 0), steps.length - 1);
@@ -171,7 +269,13 @@ function startCookingMode(meal, ingredients, steps) {
 
   function paint(animate = false) {
     stepNum.textContent = `Step ${stepIndex + 1} of ${steps.length}`;
-    stepText.textContent = steps[stepIndex];
+    const text = steps[stepIndex];
+    stepText.textContent = text;
+    // Size the type so the step fits on screen instead of scrolling.
+    const size = text.length < 110 ? "xl" : text.length < 220 ? "lg" : text.length < 380 ? "md" : "sm";
+    stepText.className = `cook-step-text size-${size}`;
+    stepTimers.replaceChildren(...durations[stepIndex].map((d) =>
+      el("button", { class: "chip", onclick: () => addTimer(d.seconds) }, icon("clock"), `Start ${d.label} timer`)));
     [...progress.children].forEach((seg, i) => seg.classList.toggle("done", i <= stepIndex));
     prevBtn.disabled = stepIndex === 0;
     const last = stepIndex === steps.length - 1;
@@ -187,10 +291,19 @@ function startCookingMode(meal, ingredients, steps) {
   function exit() {
     wakeLock?.release().catch(() => {});
     document.removeEventListener("visibilitychange", onVisibility);
-    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+    if (tick) { clearInterval(tick); tick = null; }
+    document.body.style.overflow = "";
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      overlay.remove();
+      return;
+    }
+    overlay.classList.add("closing");
+    overlay.addEventListener("animationend", () => overlay.remove(), { once: true });
+    setTimeout(() => overlay.remove(), 450); // safety net
   }
 
-  const body = el("div", { class: "cook-body" }, stepNum, stepText);
+  const body = el("div", { class: "cook-body" }, stepNum, stepText, stepTimers);
 
   // Swipe left/right between steps.
   let touchX = null;
@@ -216,8 +329,10 @@ function startCookingMode(meal, ingredients, steps) {
             e.currentTarget.setAttribute("aria-pressed", String(showIngredients));
           },
         }, icon("clipboard"), "Ingredients"),
-        el("button", { class: "icon-btn", "aria-label": "Exit cooking mode", onclick: exit }, icon("x")))),
+        el("button", { class: "cook-exit", "aria-label": "Exit cooking mode", onclick: exit },
+          icon("x"), el("span", {}, "Exit")))),
     progress,
+    timersBar,
     body,
     ingPanel,
     el("div", { class: "cook-nav" }, prevBtn, nextBtn),
@@ -234,6 +349,7 @@ function startCookingMode(meal, ingredients, steps) {
   document.addEventListener("keydown", onKey);
 
   document.body.append(overlay);
+  document.body.style.overflow = "hidden";
   document.addEventListener("visibilitychange", onVisibility);
   acquireWakeLock();
   paint();

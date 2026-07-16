@@ -1,7 +1,7 @@
 // Service worker: cache the app shell for instant loads and offline use.
 // Recipe/API traffic (TheMealDB, Anthropic) always goes to the network.
 
-const CACHE = "kitchen-recipes-v2";
+const CACHE = "kitchen-recipes-v3";
 const SHELL = [
   "./",
   "./index.html",
@@ -12,6 +12,7 @@ const SHELL = [
   "./fonts/fraunces-var-italic.woff2",
   "./js/app.js",
   "./js/ui.js",
+  "./js/foodicons.js",
   "./js/store.js",
   "./js/units.js",
   "./js/nutrition.js",

@@ -1,7 +1,8 @@
-// Recipe browser: search TheMealDB, filter with category chips + cuisine,
-// grid (image-forward cards) or list view, favorites-only, sort by rating.
+// Recipe browser: live search (type-ahead, no submit button), category chips
+// with food icons, grid/list views, favorites, sort by rating.
 
 import { el, clear, icon, starsDisplay, toast } from "../ui.js";
+import { categoryIcon } from "../foodicons.js";
 import * as mealdb from "../mealdb.js";
 import { getFavorites, getRatings, toggleFavorite } from "../store.js";
 
@@ -28,45 +29,74 @@ export async function render(container, params = {}) {
     mealdb.listAreas().catch(() => []),
   ]);
 
-  const refresh = () => render(container, {});
-
-  // --- row 1: search + surprise ---
+  // ---------- search (live, debounced — the toolbar is never re-rendered,
+  // so typing keeps focus) ----------
   const searchInput = el("input", {
     type: "search", placeholder: "Search recipes…", value: state.query,
-    "aria-label": "Search recipes",
-    onkeydown: (e) => { if (e.key === "Enter") { setSearch(searchInput.value); } },
+    "aria-label": "Search recipes", autocomplete: "off",
   });
-  const setSearch = (q) => {
-    state.query = q; state.ingredient = ""; state.category = ""; state.favOnly = false;
-    refresh();
+  const clearBtn = el("button", {
+    class: "search-clear", "aria-label": "Clear search", type: "button",
+    style: state.query ? "" : "display:none",
+    onclick: () => {
+      searchInput.value = "";
+      clearBtn.style.display = "none";
+      applySearch("");
+      searchInput.focus();
+    },
+  }, icon("x"));
+
+  let debounce;
+  searchInput.addEventListener("input", () => {
+    clearBtn.style.display = searchInput.value ? "" : "none";
+    clearTimeout(debounce);
+    const q = searchInput.value.trim();
+    debounce = setTimeout(() => {
+      if (q.length >= 2 || q.length === 0) applySearch(q);
+    }, 420);
+  });
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      clearTimeout(debounce);
+      applySearch(searchInput.value.trim());
+    }
+  });
+
+  function applySearch(q) {
+    if (q === state.query) return;
+    state.query = q;
+    if (q) { state.category = ""; state.ingredient = ""; state.favOnly = false; state.area = ""; areaSel.value = ""; }
+    paintFilters();
+    load();
+  }
+
+  // ---------- category chips with icons ----------
+  const chipButtons = new Map(); // category name ("" = All) → button
+  const makeChip = (label, name) => {
+    const btn = el("button", {
+      class: "chip",
+      onclick: () => {
+        state.category = state.category === name ? "" : name;
+        state.query = ""; searchInput.value = ""; clearBtn.style.display = "none";
+        state.ingredient = ""; state.favOnly = false;
+        paintFilters();
+        load();
+      },
+    }, categoryIcon(name || "all"), label);
+    chipButtons.set(name, btn);
+    return btn;
   };
 
-  const row1 = el("div", { class: "row" },
-    el("div", { class: "search-field" }, icon("search"), searchInput),
-    el("button", { class: "primary", onclick: () => setSearch(searchInput.value) }, "Search"),
-    el("button", {
-      "aria-label": "Surprise me with random recipes",
-      onclick: () => { state.query = ""; state.category = ""; state.area = ""; state.ingredient = ""; state.favOnly = false; refresh(); },
-    }, icon("shuffle"), el("span", { class: "surprise-label" }, "Surprise me")),
-  );
+  const chipsRow = el("div", { class: "chips-row", "aria-label": "Category" },
+    makeChip("All", ""),
+    categories.map((c) => makeChip(c, c)));
 
-  // --- row 2: category chips ---
-  const chip = (label, active, onclick) =>
-    el("button", { class: `chip${active ? " active" : ""}`, onclick }, label);
-
-  const chipsRow = el("div", { class: "chips-row", role: "tablist", "aria-label": "Category" },
-    chip("All", !state.category && !state.favOnly && !state.ingredient, () => {
-      state.category = ""; state.favOnly = false; state.ingredient = ""; refresh();
-    }),
-    categories.map((c) => chip(c, state.category === c, () => {
-      state.category = state.category === c ? "" : c;
-      state.query = ""; state.ingredient = ""; state.favOnly = false;
-      refresh();
-    })));
-
-  // --- row 3: cuisine, sort, favorites, view ---
+  // ---------- cuisine / sort / favorites / view ----------
   const areaSel = el("select", { "aria-label": "Cuisine", onchange: () => {
-    state.area = areaSel.value; state.query = ""; state.ingredient = ""; state.category = ""; state.favOnly = false; refresh();
+    state.area = areaSel.value;
+    if (state.area) { state.query = ""; searchInput.value = ""; clearBtn.style.display = "none"; state.ingredient = ""; state.category = ""; state.favOnly = false; }
+    paintFilters();
+    load();
   } },
     el("option", { value: "" }, "All cuisines"),
     areas.map((a) => el("option", { value: a, selected: state.area === a || null }, a)));
@@ -76,9 +106,15 @@ export async function render(container, params = {}) {
     el("option", { value: "rating", selected: state.sort === "rating" || null }, "My rating"));
 
   const favChip = el("button", {
-    class: `chip${state.favOnly ? " active" : ""}`,
+    class: "chip",
     "aria-pressed": String(state.favOnly),
-    onclick: () => { state.favOnly = !state.favOnly; refresh(); },
+    onclick: () => {
+      state.favOnly = !state.favOnly;
+      if (state.favOnly) { state.query = ""; searchInput.value = ""; clearBtn.style.display = "none"; state.category = ""; state.ingredient = ""; }
+      favChip.setAttribute("aria-pressed", String(state.favOnly));
+      paintFilters();
+      load();
+    },
   }, icon("heart"), "Favorites");
 
   const segmented = el("div", { class: "segmented", role: "group", "aria-label": "Layout" },
@@ -95,25 +131,59 @@ export async function render(container, params = {}) {
     segmented.children[1].classList.toggle("active", state.view === "list");
   };
 
-  const row3 = el("div", { class: "row wrap" }, areaSel, sortSel, favChip, el("span", { class: "grow" }), segmented);
+  const surpriseBtn = el("button", {
+    class: "icon-btn", "aria-label": "Surprise me with random recipes", title: "Surprise me",
+    onclick: () => {
+      Object.assign(state, { query: "", category: "", area: "", ingredient: "", favOnly: false });
+      searchInput.value = ""; clearBtn.style.display = "none"; areaSel.value = "";
+      paintFilters();
+      load();
+    },
+  }, icon("shuffle"));
 
-  container.append(el("div", { class: "toolbar" }, row1, chipsRow, row3));
+  // active-ingredient bar (from dashboard "find recipes with …" links)
+  const ingredientBar = el("div", { class: "row", style: "display:none;margin-bottom:0.8rem" });
 
-  if (state.ingredient) {
-    container.append(el("div", { class: "row", style: "margin-bottom:0.8rem" },
-      el("span", { class: "chip active" }, `Recipes with ${state.ingredient}`),
-      el("button", { class: "ghost", onclick: () => { state.ingredient = ""; refresh(); } }, icon("x"), "Clear")));
+  function paintFilters() {
+    for (const [name, btn] of chipButtons) {
+      const active = name === ""
+        ? !state.category && !state.favOnly && !state.ingredient && !state.query && !state.area
+        : state.category === name;
+      btn.classList.toggle("active", active);
+    }
+    favChip.classList.toggle("active", state.favOnly);
+    if (state.ingredient) {
+      ingredientBar.style.display = "";
+      ingredientBar.replaceChildren(
+        el("span", { class: "chip active" }, `Recipes with ${state.ingredient}`),
+        el("button", { class: "ghost", onclick: () => { state.ingredient = ""; paintFilters(); load(); } }, icon("x"), "Clear"));
+    } else {
+      ingredientBar.style.display = "none";
+    }
   }
 
   const grid = el("div", { class: `recipe-grid${state.view === "list" ? " list-mode" : ""}` });
-  container.append(grid);
+
+  container.append(
+    el("div", { class: "toolbar" },
+      el("div", { class: "row" },
+        el("div", { class: "search-field" }, icon("search"), searchInput, clearBtn),
+        surpriseBtn),
+      chipsRow,
+      el("div", { class: "row wrap" }, areaSel, sortSel, favChip, el("span", { class: "grow" }), segmented)),
+    ingredientBar,
+    grid,
+  );
+  paintFilters();
 
   function showSkeletons() {
-    grid.replaceChildren(...Array.from({ length: 8 }, () =>
+    grid.replaceChildren(...Array.from({ length: 10 }, () =>
       el("div", { class: "skeleton skeleton-card", "aria-hidden": "true" })));
   }
 
+  let loadSeq = 0; // drop stale responses when the user keeps typing
   async function load() {
+    const seq = ++loadSeq;
     showSkeletons();
     try {
       let meals;
@@ -131,9 +201,11 @@ export async function render(container, params = {}) {
       } else {
         meals = await mealdb.randomMeals(12);
       }
+      if (seq !== loadSeq) return;
       state.results = meals;
       renderResults();
     } catch (err) {
+      if (seq !== loadSeq) return;
       grid.replaceChildren(el("div", { class: "empty-state" },
         el("div", { class: "big" }, "📡"),
         el("h3", {}, "Can't reach the recipe service"),
@@ -162,7 +234,7 @@ export async function render(container, params = {}) {
       return;
     }
 
-    grid.replaceChildren(...meals.map((meal) => {
+    grid.replaceChildren(...meals.map((meal, i) => {
       const isFav = favs.has(meal.idMeal);
       const heart = el("button", {
         class: `fav-btn${isFav ? " on" : ""}`,
@@ -179,7 +251,8 @@ export async function render(container, params = {}) {
       }, icon("heart"));
 
       return el("article", {
-        class: "recipe-card",
+        class: "recipe-card enter",
+        style: `--i:${Math.min(i, 11)}`,
         tabindex: 0,
         role: "link",
         "aria-label": meal.strMeal,
