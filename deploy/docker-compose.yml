@@ -1,0 +1,38 @@
+# Public deployment: Caddy (HTTPS) → Authelia (password + Google Authenticator)
+# → the app. Only Caddy is exposed; the app container has no public port.
+#
+# First run ./setup.sh once — it generates .env, authelia/configuration.yml
+# and authelia/users_database.yml.
+
+services:
+  kitchen-recipes:
+    build:
+      context: ..
+    container_name: kitchen-recipes
+    restart: unless-stopped
+
+  authelia:
+    image: authelia/authelia:4.38
+    container_name: authelia
+    restart: unless-stopped
+    volumes:
+      - ./authelia:/config
+    environment:
+      - TZ=Europe/Copenhagen
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

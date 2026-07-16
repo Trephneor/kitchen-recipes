@@ -1,0 +1,10 @@
+services:
+  kitchen-recipes:
+    build: .
+    container_name: kitchen-recipes
+    restart: unless-stopped
+    ports:
+      - "8480:80"
+    # Camera, microphone and screen wake-lock require a secure context.
+    # Either open the app via https (put this behind your reverse proxy,
+    # e.g. Traefik/Caddy/NPM with a LAN cert) or use http://localhost.

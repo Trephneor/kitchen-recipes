@@ -1,0 +1,5 @@
+# Keep the deployment stack (secrets, auth config) out of the web-root image.
+deploy
+Dockerfile
+docker-compose.yml
+README.md

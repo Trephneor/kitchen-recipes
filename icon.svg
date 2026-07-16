@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" rx="22" fill="#bc4b12"/>
+  <g fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round">
+    <!-- pot -->
+    <path d="M25 52 h50 v18 a8 8 0 0 1 -8 8 h-34 a8 8 0 0 1 -8 -8 z" fill="#ffffff" stroke="none"/>
+    <line x1="18" y1="52" x2="82" y2="52"/>
+    <!-- steam -->
+    <path d="M40 40 q-4 -7 0 -13"/>
+    <path d="M52 42 q-4 -8 0 -15"/>
+    <path d="M64 40 q-4 -7 0 -13"/>
+  </g>
+</svg>
