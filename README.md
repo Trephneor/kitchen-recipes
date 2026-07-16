@@ -51,6 +51,15 @@ GitHub Pages is HTTPS, the camera, voice input and screen wake-lock all work.
   good sources: pepper, broccoli, orange", with a one-tap search for recipes
   using them).
 
+## Native iOS app
+
+The web app has a native sibling: a **SwiftUI iOS app** in [`ios/`](ios/)
+targeting iOS 26, with Liquid Glass chrome, a Tinder-style discovery deck,
+Airbnb-style zoom transitions, and a cooking mode wrapped in a gentle ember
+border animation. Same features — recipes, Danish measures, favorites &
+ratings, photo/voice diary, nutrition graph and insights — all on-device.
+See [`ios/README.md`](ios/README.md) for build instructions (Xcode 26).
+
 ## Quick start
 
 ```bash
