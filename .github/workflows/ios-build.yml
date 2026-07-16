@@ -1,0 +1,74 @@
+name: iOS build
+
+# Builds the SwiftUI app for the iOS Simulator on GitHub's free macOS runners
+# (no signing needed) and uploads the .app as an artifact. If an
+# APPETIZE_API_TOKEN repository secret is configured, the build is also
+# published to Appetize.io, which streams it as a playable app in the browser.
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios-build.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: ios-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      - name: Build for iOS Simulator
+        run: |
+          xcodebuild build \
+            -project ios/KitchenRecipes.xcodeproj \
+            -scheme KitchenRecipes \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ios/build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Zip the app bundle
+        run: |
+          cd ios/build/Build/Products/Release-iphonesimulator
+          zip -qry KitchenRecipes-simulator.zip KitchenRecipes.app
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KitchenRecipes-simulator
+          path: ios/build/Build/Products/Release-iphonesimulator/KitchenRecipes-simulator.zip
+          retention-days: 30
+
+      # Optional: publish to Appetize.io so the app is playable in a browser.
+      # Create a free account at appetize.io, put the API token in the repo
+      # secret APPETIZE_API_TOKEN, and (after the first publish) the returned
+      # publicKey in the APPETIZE_PUBLIC_KEY secret to keep updating the same
+      # app URL instead of creating new ones.
+      - name: Publish to Appetize.io
+        env:
+          APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
+          APPETIZE_PUBLIC_KEY: ${{ secrets.APPETIZE_PUBLIC_KEY }}
+        run: |
+          if [ -z "$APPETIZE_API_TOKEN" ]; then
+            echo "No APPETIZE_API_TOKEN secret — skipping browser publish." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          URL="https://api.appetize.io/v1/apps"
+          if [ -n "$APPETIZE_PUBLIC_KEY" ]; then
+            URL="$URL/$APPETIZE_PUBLIC_KEY"
+          fi
+          RESPONSE=$(curl -sf -H "X-Api-Key: $APPETIZE_API_TOKEN" \
+            -F "file=@ios/build/Build/Products/Release-iphonesimulator/KitchenRecipes-simulator.zip" \
+            -F "platform=ios" "$URL")
+          KEY=$(echo "$RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["publicKey"])')
+          echo "### Play it in the browser" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://appetize.io/app/$KEY" >> "$GITHUB_STEP_SUMMARY"
