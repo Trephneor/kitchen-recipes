@@ -9,7 +9,10 @@ iOS app, targeting **iOS 26** so it can use the real Liquid Glass APIs.
   ratings, Danish measurements, and Airbnb-style zoom transitions from card
   to detail.
 - **Discover** — a Tinder-style deck of random recipes: swipe right to save
-  a favorite, left to pass, tap to open.
+  a favorite, left to pass, tap to open. A filter sheet (toolbar button,
+  badge when active) narrows the deck to chosen categories — Vegetarian,
+  Dessert, Seafood… — applied on Done, with no-repeat dealing and a
+  "seen them all / start over" state.
 - **Cooking mode** — full-screen, dark and calm, with a *gentle ember border*
   flowing around the screen edge (one Canvas, ~30 particles, 30 fps cap, no
   live blur — it respects Reduce Motion). Steps page horizontally and always

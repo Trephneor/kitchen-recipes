@@ -1,6 +1,8 @@
-// Discover: a swipeable deck of random recipes. Swipe right to save a
-// favorite, left to pass — with rotation, stamps and spring physics in the
-// Tinder tradition. Tap a card to open the full recipe.
+// Discover: a swipeable deck of recipes. Swipe right to save a favorite,
+// left to pass — with rotation, stamps and spring physics in the Tinder
+// tradition. Tap a card to open the full recipe. A filter sheet narrows the
+// deck to chosen categories (Vegetarian, Dessert, …) without cluttering the
+// main view: just a toolbar button that shows a badge while filters are on.
 
 import SwiftUI
 
@@ -10,24 +12,35 @@ struct DiscoverDeckView: View {
     @State private var deck: [Recipe] = []
     @State private var isLoading = false
     @State private var loadFailed = false
-    @State private var savedCount = 0
+
+    @State private var categories: [String] = []
+    @State private var selectedCategories: Set<String> = []
+    @State private var showFilters = false
+    /// Everything already dealt in this session, so refills never repeat cards.
+    @State private var seenIDs: Set<String> = []
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Palette.canvas.ignoresSafeArea()
 
-                if deck.isEmpty && isLoading {
-                    ProgressView("Shuffling recipes…")
-                } else if deck.isEmpty && loadFailed {
-                    VStack(spacing: 12) {
-                        Image(systemName: "wifi.exclamationmark")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.secondary)
-                        Text("Can't reach the recipe service").font(.headline)
-                        Button("Try again") { Task { await refill() } }
-                            .buttonStyle(.glassProminent)
+                if deck.isEmpty && loadFailed {
+                    unavailableState(icon: "wifi.exclamationmark",
+                                     title: "Can't reach the recipe service",
+                                     message: "Check the connection and try again.",
+                                     actionLabel: "Try again") {
+                        Task { await refill() }
                     }
+                } else if deck.isEmpty && !isLoading && !selectedCategories.isEmpty {
+                    unavailableState(icon: "checkmark.rectangle.stack",
+                                     title: "You've seen them all",
+                                     message: "Every \(selectedCategories.sorted().joined(separator: " and ").lowercased()) recipe has crossed the deck.",
+                                     actionLabel: "Start over") {
+                        seenIDs.removeAll()
+                        Task { await refill() }
+                    }
+                } else if deck.isEmpty {
+                    ProgressView("Shuffling recipes…")
                 } else {
                     deckStack
                 }
@@ -36,8 +49,24 @@ struct DiscoverDeckView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        Haptics.tap()
+                        showFilters = true
+                    } label: {
+                        Image(systemName: selectedCategories.isEmpty
+                              ? "line.3.horizontal.decrease"
+                              : "line.3.horizontal.decrease.circle.fill")
+                            .foregroundStyle(selectedCategories.isEmpty ? Color.primary : Palette.ember)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .accessibilityLabel(selectedCategories.isEmpty
+                                        ? "Filter the deck"
+                                        : "Filter the deck (\(selectedCategories.count) active)")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
                         Haptics.thud()
                         deck.removeAll()
+                        seenIDs.removeAll()
                         Task { await refill() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -49,12 +78,32 @@ struct DiscoverDeckView: View {
                 RecipeDetailView(summary: summary,
                                  preloaded: deck.first { $0.id == summary.id })
             }
-            .task { if deck.isEmpty { await refill() } }
+            .sheet(isPresented: $showFilters) {
+                DeckFilterSheet(categories: categories, selected: $selectedCategories)
+            }
+            .task {
+                if categories.isEmpty {
+                    categories = (try? await model.mealDB.categories()) ?? []
+                }
+                if deck.isEmpty { await refill() }
+            }
+            .onChange(of: selectedCategories) { _, _ in
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    deck.removeAll()
+                }
+                seenIDs.removeAll()
+                Task { await refill() }
+            }
         }
     }
 
+    // MARK: Deck
+
     private var deckStack: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 14) {
+            if !selectedCategories.isEmpty {
+                activeFilterPill
+            }
             ZStack {
                 // Bottom-most card renders first; only the top card is draggable.
                 ForEach(Array(deck.prefix(3).enumerated().reversed()), id: \.element.id) { index, recipe in
@@ -70,6 +119,39 @@ struct DiscoverDeckView: View {
             actionRow
         }
         .padding(.bottom, 16)
+    }
+
+    /// One quiet line above the deck: what's filtered, tap to edit, ✕ to clear.
+    private var activeFilterPill: some View {
+        HStack(spacing: 0) {
+            Button {
+                showFilters = true
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .font(.caption.weight(.semibold))
+                    Text(selectedCategories.sorted().joined(separator: " · "))
+                        .font(.footnote.weight(.medium))
+                        .lineLimit(1)
+                }
+                .padding(.leading, 14)
+                .padding(.vertical, 9)
+            }
+            Button {
+                Haptics.tap()
+                selectedCategories.removeAll()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+            }
+            .accessibilityLabel("Clear filters")
+        }
+        .glassEffect(.regular.interactive())
+        .buttonStyle(.squishy)
+        .padding(.horizontal, 20)
     }
 
     private var actionRow: some View {
@@ -107,7 +189,6 @@ struct DiscoverDeckView: View {
     private func advance(recipe: Recipe, liked: Bool) {
         if liked, !model.isFavorite(recipe.id) {
             model.toggleFavorite(recipe.id)
-            savedCount += 1
         }
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             deck.removeAll { $0.id == recipe.id }
@@ -117,18 +198,151 @@ struct DiscoverDeckView: View {
         }
     }
 
+    // MARK: Loading
+
     private func refill() async {
         guard !isLoading else { return }
         isLoading = true
         loadFailed = false
         defer { isLoading = false }
         do {
-            let fresh = try await model.mealDB.random(count: 8)
-            let existing = Set(deck.map(\.id))
-            deck.append(contentsOf: fresh.filter { !existing.contains($0.id) })
+            let fresh: [Recipe]
+            if selectedCategories.isEmpty {
+                fresh = try await model.mealDB.random(count: 8)
+            } else {
+                fresh = try await filteredBatch()
+            }
+            let excluded = Set(deck.map(\.id)).union(seenIDs)
+            let newOnes = fresh.filter { !excluded.contains($0.id) }
+            deck.append(contentsOf: newOnes)
+            seenIDs.formUnion(newOnes.map(\.id))
         } catch {
             loadFailed = deck.isEmpty
         }
+    }
+
+    /// Union the selected categories, drop everything already seen, shuffle,
+    /// and hydrate a handful of full recipes for the deck.
+    private func filteredBatch() async throws -> [Recipe] {
+        let client = model.mealDB
+        var pool: [MealSummary] = []
+        for category in selectedCategories.sorted() {
+            pool += try await client.filter(.category(category))
+        }
+        let excluded = Set(deck.map(\.id)).union(seenIDs)
+        let picks = pool.filter { !excluded.contains($0.id) }.shuffled().prefix(8)
+
+        return try await withThrowingTaskGroup(of: Recipe?.self) { group in
+            for summary in picks {
+                group.addTask { try await client.lookup(id: summary.id) }
+            }
+            var out: [Recipe] = []
+            for try await recipe in group {
+                if let recipe { out.append(recipe) }
+            }
+            return out
+        }
+    }
+
+    private func unavailableState(icon: String, title: String, message: String,
+                                  actionLabel: String, action: @escaping () -> Void) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary)
+            Text(title).font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+            HStack(spacing: 12) {
+                Button(actionLabel, action: action)
+                    .buttonStyle(.glassProminent)
+                if !selectedCategories.isEmpty {
+                    Button("Change filters") { showFilters = true }
+                        .buttonStyle(.glass)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Filter sheet
+
+private struct DeckFilterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let categories: [String]
+    @Binding var selected: Set<String>
+
+    /// Edits are local until "Done" — the deck doesn't thrash mid-selection.
+    @State private var draft: Set<String>
+
+    init(categories: [String], selected: Binding<Set<String>>) {
+        self.categories = categories
+        self._selected = selected
+        self._draft = State(initialValue: selected.wrappedValue)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 148), spacing: 10)],
+                          spacing: 10) {
+                    ForEach(categories, id: \.self) { name in
+                        let isOn = draft.contains(name)
+                        Button {
+                            Haptics.tap()
+                            if isOn {
+                                draft.remove(name)
+                            } else {
+                                draft.insert(name)
+                            }
+                        } label: {
+                            Label(name, systemImage: FoodIcons.symbol(for: name))
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                                .foregroundStyle(isOn ? Color.white : .primary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .glassEffect(isOn ? .regular.tint(Palette.ember).interactive()
+                                                  : .regular.interactive(),
+                                             in: .capsule)
+                        }
+                        .buttonStyle(.squishy)
+                        .accessibilityAddTraits(isOn ? .isSelected : [])
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.top, 6)
+
+                Text("Pick as many as you like — the deck deals only those kinds of recipes.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .navigationTitle("Filter the deck")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Clear") {
+                        Haptics.tap()
+                        draft.removeAll()
+                    }
+                    .disabled(draft.isEmpty)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        if selected != draft { selected = draft }
+                        dismiss()
+                    }
+                    .bold()
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 
