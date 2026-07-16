@@ -272,7 +272,13 @@ struct RecipesView: View {
                 let ids = Array(model.favorites)
                 var loaded: [Recipe] = []
                 for id in ids {
-                    if let recipe = preloaded[id] ?? (try? await model.mealDB.lookup(id: id)) {
+                    // Not `??` — its right operand is an autoclosure, which
+                    // can't contain an await.
+                    var recipe = preloaded[id]
+                    if recipe == nil {
+                        recipe = try? await model.mealDB.lookup(id: id)
+                    }
+                    if let recipe {
                         loaded.append(recipe)
                     }
                 }
